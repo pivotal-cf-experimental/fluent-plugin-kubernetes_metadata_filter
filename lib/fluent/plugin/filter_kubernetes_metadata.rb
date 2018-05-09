@@ -60,6 +60,7 @@ module Fluent::Plugin
     # CONTAINER_NAME=k8s_$containername.$containerhash_$podname_$namespacename_$poduuid_$rand32bitashex
     # CONTAINER_FULL_ID=dockeridassha256hexvalue
     config_param :use_journal, :bool, default: false
+
     # Field 2 is the container_hash, field 5 is the pod_id, and field 6 is the pod_randhex
     # I would have included them as named groups, but you can't have named groups that are
     # non-capturing :P
@@ -74,7 +75,7 @@ module Fluent::Plugin
     config_param :orphaned_namespace_name, :string, default: '.orphaned'
     config_param :orphaned_namespace_id, :string, default: 'orphaned'
 
-    def fetch_pod_metadata(namespace_name, pod_name)
+    def fetch_pod_metadata_by_name(namespace_name, pod_name)
       log.trace("fetching pod metadata: #{namespace_name}/#{pod_name}") if log.trace?
       begin
         metadata = @client.get_pod(pod_name, namespace_name)
@@ -87,7 +88,7 @@ module Fluent::Plugin
             metadata = parse_pod_metadata(metadata)
             @stats.bump(:pod_cache_api_updates)
             log.trace("parsed metadata for #{namespace_name}/#{pod_name}: #{metadata}") if log.trace?
-            @cache[metadata['pod_id']] = metadata
+            @pod_cache[metadata['pod_id']] = metadata
             return metadata
           rescue Exception=>e
             log.debug(e)
@@ -111,7 +112,7 @@ module Fluent::Plugin
       log.info(@stats)
       if log.level == Fluent::Log::LEVEL_TRACE
         log.trace("       id cache: #{@id_cache.to_a}")
-        log.trace("      pod cache: #{@cache.to_a}")
+        log.trace("      pod cache: #{@pod_cache.to_a}")
         log.trace("namespace cache: #{@namespace_cache.to_a}")
       end
     end
@@ -173,8 +174,11 @@ module Fluent::Plugin
       # Caches pod/namespace UID tuples for a given container UID.
       @id_cache = LruRedux::TTL::ThreadSafeCache.new(@cache_size, @cache_ttl)
 
-      # Use the container UID as the key to fetch a hash containing pod metadata
-      @cache = LruRedux::TTL::ThreadSafeCache.new(@cache_size, @cache_ttl)
+      # Caches pod/namespace UID tuples for a given container name.
+      @name_cache = LruRedux::TTL::ThreadSafeCache.new(@cache_size, @cache_ttl)
+
+      # Use the pod UID as the key to fetch a hash containing pod metadata
+      @pod_cache = LruRedux::TTL::ThreadSafeCache.new(@cache_size, @cache_ttl)
 
       # Use the namespace UID as the key to fetch a hash containing namespace metadata
       @namespace_cache = LruRedux::TTL::ThreadSafeCache.new(@cache_size, @cache_ttl)
@@ -296,9 +300,13 @@ module Fluent::Plugin
 
     def filter_stream_from_files(tag, es)
       new_es = Fluent::MultiEventStream.new
-
       match_data = tag.match(@tag_to_kubernetes_name_regexp_compiled)
       batch_miss_cache = {}
+
+      # docker_id optional
+      # pod_name optional
+
+
       if match_data
         container_id = match_data['docker_id']
         metadata = {

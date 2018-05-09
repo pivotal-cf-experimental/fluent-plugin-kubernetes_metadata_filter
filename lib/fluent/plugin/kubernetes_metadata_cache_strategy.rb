@@ -19,15 +19,48 @@
 module KubernetesMetadata
   module CacheStrategy
 
+    # namespace & pod name & container id
+    # namespace & pod uid & container name
+    #
+    # namespace & pod name & container name
+    # namespace & pod uid & container id
+
+
+    def get_pod_metadata_with_uid(key, namespace_name, pod_uid, record_create_time, batch_miss_cache)
+      metadata = @pod_cache.fetch(ids[:pod_id]) do
+        @stats.bump(:pod_cache_miss)
+        m = fetch_pod_metadata(namespace_name, pod_name)
+        (m.nil? || m.empty?) ? {'pod_id'=>ids[:pod_id]} : m
+      end
+
+      pod_name = metadata['pod_name']
+
+      ids = @id_cache[key]
+
+      if !ids.nil?
+        metadata.merge!(@namespace_cache.fetch(ids[:namespace_id]) do
+          @stats.bump(:namespace_cache_miss)
+          m = fetch_namespace_metadata(namespace_name)
+          (m.nil? || m.empty?) ?  {'namespace_id'=>ids[:namespace_id]} : m
+        end)
+      else if
+        # SLOW PATH
+        @stats.bump(:id_cache_miss)
+        return batch_miss_cache["#{namespace_name}_#{pod_uid}"] if batch_miss_cache.key?("#{namespace_name}_#{pod_uid}")
+
+      end
+    end
+
+    # TODO: rename this method
     def get_pod_metadata(key, namespace_name, pod_name, record_create_time, batch_miss_cache)
       metadata = {}
       ids = @id_cache[key]
       if !ids.nil?
         # FAST PATH
         # Cache hit, fetch metadata from the cache
-        metadata = @cache.fetch(ids[:pod_id]) do
+        metadata = @pod_cache.fetch(ids[:pod_id]) do
           @stats.bump(:pod_cache_miss)
-          m = fetch_pod_metadata(namespace_name, pod_name)
+          m = fetch_pod_metadata_by_name(namespace_name, pod_name)
           (m.nil? || m.empty?) ? {'pod_id'=>ids[:pod_id]} : m
         end
         metadata.merge!(@namespace_cache.fetch(ids[:namespace_id]) do
@@ -39,7 +72,7 @@ module KubernetesMetadata
         # SLOW PATH
         @stats.bump(:id_cache_miss)
         return batch_miss_cache["#{namespace_name}_#{pod_name}"] if batch_miss_cache.key?("#{namespace_name}_#{pod_name}")
-        pod_metadata = fetch_pod_metadata(namespace_name, pod_name)
+        pod_metadata = fetch_pod_metadata_by_name(namespace_name, pod_name)
         namespace_metadata = fetch_namespace_metadata(namespace_name)
         ids = { :pod_id=> pod_metadata['pod_id'], :namespace_id => namespace_metadata['namespace_id'] }
         if !ids[:pod_id].nil? && !ids[:namespace_id].nil?
@@ -54,7 +87,7 @@ module KubernetesMetadata
             if ns_time <= record_create_time
               # namespace is older then record for pod
               ids[:pod_id] = key
-              metadata = @cache.fetch(ids[:pod_id]) do
+              metadata = @pod_cache.fetch(ids[:pod_id]) do
                 m = { 'pod_id' => ids[:pod_id] }
               end
             end

@@ -138,7 +138,7 @@ class KubernetesMetadataFilterTest < Test::Unit::TestCase
           kubernetes_url https://localhost:8443
           watch false
           cache_size 1
-        ', d: nil)
+        ', d: nil, tag: DEFAULT_TAG)
       d = create_driver(config) if d.nil?
       if ENV['LOGLEVEL'] 
         logger = Logger.new(STDOUT)
@@ -146,7 +146,7 @@ class KubernetesMetadataFilterTest < Test::Unit::TestCase
         instance = d.instance
         instance.instance_variable_set(:@log,logger)
       end
-      d.run(default_tag: DEFAULT_TAG) {
+      d.run(default_tag: tag) {
         d.feed(@time, msg)
       }
       d.filtered.map{|e| e.last}
@@ -164,7 +164,7 @@ class KubernetesMetadataFilterTest < Test::Unit::TestCase
       d.filtered.map{|e| e.last}
     end
 
-    test 'with docker & kubernetes metadata where id cache hit and metadata miss' do
+    test 'with docker & kubernetes metadata where container id cache hit and metadata miss' do
       VCR.use_cassette('kubernetes_docker_metadata') do
         driver = create_driver('
           kubernetes_url https://localhost:8443
@@ -197,7 +197,7 @@ class KubernetesMetadataFilterTest < Test::Unit::TestCase
       end
     end
 
-    test 'with docker & kubernetes metadata where id cache hit and metadata is reloaded' do
+    test 'with docker & kubernetes metadata where container id cache hit and metadata is reloaded' do
       VCR.use_cassette('kubernetes_docker_metadata') do
         driver = create_driver('
           kubernetes_url https://localhost:8443
@@ -253,6 +253,41 @@ class KubernetesMetadataFilterTest < Test::Unit::TestCase
               'component' => 'fabric8Console'
             }
           }
+        }
+
+        assert_equal(expected_kube_metadata, filtered[0])
+      end
+    end
+
+    test 'when using a tag regex which collects pod uid, container and namespace name' do
+      TAG_WITH_POD_UID_AND_CONTAINER_NAME = 'var.lib.kubelet.pods.2e63a315-52ce-11e8-9a43-42010a001004.volumes.kubernetes.io~empty-dir.some-namespace_some-container-name_varlog.some-log-file.log'
+
+      VCR.use_cassette('kubernetes_docker_metadata') do
+        filtered = emit({'time'=>'2015-05-08T09:22:01Z'},
+                        '
+                          kubernetes_url https://localhost:8443
+                          watch false
+                          cache_size 1
+                          tag_to_kubernetes_name_regexp var\.lib\.kubelet\.pods\.(?<pod_uid>[a-z\-0-9]{36})\.volumes\.kubernetes.io~empty-dir\.(?<namespace>[^\._]+)_(?<container_name>[^\._]+)-varlog-volume.*',
+                        tag: TAG_WITH_POD_UID_AND_CONTAINER_NAME)
+
+        expected_kube_metadata = {
+            'time'=>'2015-05-08T09:22:01Z',
+            'docker' => {
+                'container_id' => '49095a2894da899d3b327c5fde1e056a81376cc9a8f8b09a195f2a92bceed459'
+            },
+            'kubernetes' => {
+                'host'           => 'jimmi-redhat.localnet',
+                'pod_name'       => 'fabric8-console-controller-98rqc',
+                'container_name' => 'fabric8-console-container',
+                'namespace_name' => 'default',
+                'namespace_id'   => '898268c8-4a36-11e5-9d81-42010af0194c',
+                'pod_id'         => 'c76927af-f563-11e4-b32d-54ee7527188d',
+                'master_url'     => 'https://localhost:8443',
+                'labels' => {
+                    'component' => 'fabric8Console'
+                }
+            }
         }
 
         assert_equal(expected_kube_metadata, filtered[0])
